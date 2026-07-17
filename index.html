@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>Conversor de Cupom - Ana Store</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    :root { font-family: Arial, Helvetica, sans-serif; color: #111827; background: #f3f4f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px; }
+    .card { max-width: 720px; margin: 0 auto; background: white; border-radius: 16px; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { line-height: 1.45; color: #4b5563; }
+    label { display: block; font-weight: 700; margin: 14px 0 6px; }
+    input, select, textarea, button { width: 100%; font-size: 16px; border-radius: 10px; }
+    input, select, textarea { border: 1px solid #d1d5db; padding: 12px; background: white; }
+    textarea { min-height: 260px; font-family: "Courier New", monospace; white-space: pre-wrap; }
+    button { border: 0; padding: 14px; font-weight: 700; cursor: pointer; margin-top: 12px; }
+    .primary { background: #111827; color: white; }
+    .secondary { background: #e5e7eb; color: #111827; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 10px; background: #eef2ff; display: none; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .small { font-size: 13px; color: #6b7280; }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } body { padding: 10px; } .card { border-radius: 12px; padding: 14px; } }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Conversor de cupom - Ana Store</h1>
+    <p>Selecione o PDF da venda. O arquivo é processado no próprio celular.</p>
+
+    <label for="pdfFile">PDF da venda</label>
+    <input id="pdfFile" type="file" accept="application/pdf,.pdf">
+
+    <div class="grid">
+      <div>
+        <label for="paper">Largura do cupom</label>
+        <select id="paper">
+          <option value="80">80 mm - recomendado</option>
+          <option value="58">58 mm</option>
+        </select>
+      </div>
+      <div>
+        <label for="fontSize">Tamanho da letra</label>
+        <select id="fontSize">
+          <option value="9">Normal</option>
+          <option value="8">Compacta</option>
+          <option value="10">Grande</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="secondary" id="readBtn">1. Ler PDF</button>
+
+    <label for="preview">Prévia editável</label>
+    <textarea id="preview" placeholder="Os dados do cupom aparecerão aqui."></textarea>
+
+    <button class="primary" id="generateBtn">2. Gerar cupom em PDF</button>
+    <div id="status" class="status"></div>
+
+    <p class="small">É necessário internet apenas para carregar as bibliotecas. O PDF não é enviado a servidor.</p>
+  </main>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const $ = id => document.getElementById(id);
+const statusBox = $("status");
+
+function status(msg) {
+  statusBox.style.display = "block";
+  statusBox.textContent = msg;
+}
+
+function cleanText(s) {
+  return s.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").trim();
+}
+
+function extractValue(text, label, nextLabels=[]) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const end = nextLabels.length
+    ? "(?=" + nextLabels.map(x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + "|$)"
+    : "$";
+  const re = new RegExp(escaped + "\\s*:?\\s*([\\s\\S]*?)" + end, "i");
+  const m = text.match(re);
+  return m ? cleanText(m[1]) : "";
+}
+
+function moneyBR(v) {
+  return Number(v || 0).toLocaleString("pt-BR", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function parseMoney(s) {
+  if (!s) return 0;
+  return Number(s.replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",", ".")) || 0;
+}
+
+function buildReceipt(raw) {
+  const t = raw.replace(/\r/g, "\n").replace(/\n+/g, "\n");
+
+  const venda = (t.match(/Venda\s+([A-Z0-9-]+)/i) || [,""])[1];
+  const data = (t.match(/(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}(?::\d{2})?)/) || [,""])[1];
+  const vendedor = extractValue(t, "Vendedor", ["Cliente", "Produtos / Serviços"]);
+  const cliente = extractValue(t, "Cliente", ["Produtos / Serviços"]);
+
+  const desc = (t.match(/CAMISETA[\s\S]*?(?=\(\d+\)|\d{1,3},\d{2}\s+\d+\s*UN)/i) || [""])[0]
+    .replace(/\n/g," ").replace(/\s+/g," ").trim();
+  const codigo = (t.match(/\((\d+)\)/) || [,""])[1];
+
+  const itemMatch = t.match(/(\d{1,3},\d{2})\s+(\d+)\s*UN\s+(\d{1,3},\d{2})\s+(\d{1,3},\d{2})/);
+  const unit = itemMatch ? parseMoney(itemMatch[1]) : 0;
+  const qtd = itemMatch ? itemMatch[2] : "1";
+  const descItem = itemMatch ? parseMoney(itemMatch[3]) : 0;
+  const totalItem = itemMatch ? parseMoney(itemMatch[4]) : 0;
+
+  const forma = extractValue(t, "Forma de pagamento", ["Totais"])
+    .replace(/^Valor\s*/i,"").replace(/^\d+\s*/,"").replace(/\s+\d{1,3},\d{2}\s*$/,"").trim();
+
+  const bruto = parseMoney((t.match(/Total Bruto\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
+  const desconto = parseMoney((t.match(/Descontos\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
+  const liquido = parseMoney((t.match(/Total Líquido\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
+
+  const lines = [
+    "================================",
+    "            ANA STORE",
+    "================================",
+    "Rua Pedro Garcia Cano, 135",
+    "Nova Tanabi - Tanabi/SP",
+    "Telefone: (17) 99109-2383",
+    "anaclaudiahilario10@gmail.com",
+    "--------------------------------",
+    "       COMPROVANTE NAO FISCAL",
+    "--------------------------------",
+    "VENDA: " + venda,
+    "DATA: " + data,
+    "VENDEDOR: " + (vendedor || "Tiago Alves"),
+    "",
+    "CLIENTE: " + (cliente || "Cliente final"),
+    "--------------------------------",
+    "PRODUTO",
+    "--------------------------------",
+    desc || "PRODUTO",
+  ];
+  if (codigo) lines.push("CODIGO: " + codigo);
+  lines.push(
+    qtd + " UN x R$ " + moneyBR(unit),
+    "DESCONTO: R$ " + moneyBR(descItem),
+    "TOTAL ITEM: R$ " + moneyBR(totalItem || liquido),
+    "--------------------------------",
+    "FORMA DE PAGAMENTO",
+    forma || "Cartao de credito a vista",
+    "R$ " + moneyBR(liquido || totalItem),
+    "--------------------------------",
+    "TOTAL BRUTO: R$ " + moneyBR(bruto || unit),
+    "DESCONTO: R$ " + moneyBR(desconto || descItem),
+    "TOTAL A PAGAR: R$ " + moneyBR(liquido || totalItem),
+    "================================",
+    "",
+    "      OBRIGADO PELA COMPRA!",
+    "",
+    "Este documento nao possui valor fiscal.",
+    "Trocas em ate 30 dias mediante",
+    "apresentacao deste comprovante.",
+    "",
+    "Instagram: @anastore.tanabi",
+    "================================"
+  );
+  return lines.join("\n");
+}
+
+async function readPdf() {
+  const file = $("pdfFile").files[0];
+  if (!file) { alert("Selecione um PDF."); return; }
+
+  status("Lendo o PDF...");
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjsLib.getDocument({data}).promise;
+  let all = "";
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    all += content.items.map(i => i.str).join(" ") + "\n";
+  }
+
+  $("preview").value = buildReceipt(all);
+  status("PDF lido. Confira os dados antes de gerar.");
+}
+
+async function generatePdf() {
+  const content = $("preview").value.trim();
+  if (!content) { alert("Leia um PDF ou preencha a prévia."); return; }
+
+  const { jsPDF } = window.jspdf;
+  const width = Number($("paper").value);
+  const fontSize = Number($("fontSize").value);
+  const margin = width === 80 ? 4 : 3;
+  const lineHeight = fontSize * 0.42;
+
+  const temp = new jsPDF({unit:"mm", format:[width, 300], orientation:"portrait"});
+  temp.setFont("courier", "normal");
+  temp.setFontSize(fontSize);
+
+  const wrapped = [];
+  for (const rawLine of content.split("\n")) {
+    if (!rawLine) { wrapped.push(""); continue; }
+    wrapped.push(...temp.splitTextToSize(rawLine, width - margin*2));
+  }
+
+  const height = Math.max(80, margin*2 + wrapped.length*lineHeight + 4);
+  const doc = new jsPDF({unit:"mm", format:[width, height], orientation:"portrait"});
+  doc.setFont("courier", "normal");
+  doc.setFontSize(fontSize);
+
+  let y = margin + 2;
+  for (const line of wrapped) {
+    doc.text(line, margin, y);
+    y += lineHeight;
+  }
+
+  const venda = (content.match(/VENDA:\s*(.+)/i)||[,"cupom"])[1].trim().replace(/[^\w-]+/g,"_");
+  doc.save("Cupom_" + venda + "_" + width + "mm.pdf");
+  status("Cupom gerado.");
+}
+
+$("readBtn").addEventListener("click", () => readPdf().catch(e => {
+  console.error(e);
+  status("Não foi possível ler o PDF. Verifique a internet e tente novamente.");
+}));
+
+$("generateBtn").addEventListener("click", () => generatePdf().catch(e => {
+  console.error(e);
+  status("Erro ao gerar o cupom.");
+}));
+</script>
+</body>
+</html>
