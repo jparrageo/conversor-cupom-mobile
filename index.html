@@ -100,75 +100,51 @@ function parseMoney(s) {
 }
 
 function buildReceipt(raw) {
-  const t = raw.replace(/\r/g, "\n").replace(/\n+/g, "\n");
+  const t = raw.replace(/\r/g, " ").replace(/\n/g, " ").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 
-  const venda = (t.match(/Venda\s+([A-Z0-9-]+)/i) || [,""])[1];
+  const documento = t.match(/(?:Venda|Pré-pedido|Pre-pedido|Orçamento|Orcamento)\s+([A-Z0-9-]+)/i);
+  const venda = documento ? documento[1] : "";
+  const tipoDocumento = documento ? (documento[0].match(/Venda/i) ? "VENDA" : documento[0].match(/Pré-pedido|Pre-pedido/i) ? "PRE-PEDIDO" : "ORCAMENTO") : "DOCUMENTO";
   const data = (t.match(/(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}(?::\d{2})?)/) || [,""])[1];
-  const vendedor = extractValue(t, "Vendedor", ["Cliente", "Produtos / Serviços"]);
-  const cliente = extractValue(t, "Cliente", ["Produtos / Serviços"]);
 
-  const desc = (t.match(/CAMISETA[\s\S]*?(?=\(\d+\)|\d{1,3},\d{2}\s+\d+\s*UN)/i) || [""])[0]
-    .replace(/\n/g," ").replace(/\s+/g," ").trim();
-  const codigo = (t.match(/\((\d+)\)/) || [,""])[1];
+  const vendedorMatch = t.match(/Vendedor\s*:?\s*(.+?)(?=\s+Cliente\s*:|\s+CPF\s*\/\s*CNPJ|\s+Produtos\s*\/\s*Serviços)/i);
+  const vendedor = vendedorMatch ? cleanText(vendedorMatch[1]) : "Tiago Alves";
+  const clienteMatch = t.match(/Cliente\s*:?\s*(.+?)(?=\s+CPF\s*\/\s*CNPJ|\s+Contatos\s*:|\s+Produtos\s*\/\s*Serviços)/i);
+  const cliente = clienteMatch ? cleanText(clienteMatch[1]) : "Cliente final";
 
-  const itemMatch = t.match(/(\d{1,3},\d{2})\s+(\d+)\s*UN\s+(\d{1,3},\d{2})\s+(\d{1,3},\d{2})/);
-  const unit = itemMatch ? parseMoney(itemMatch[1]) : 0;
-  const qtd = itemMatch ? itemMatch[2] : "1";
-  const descItem = itemMatch ? parseMoney(itemMatch[3]) : 0;
-  const totalItem = itemMatch ? parseMoney(itemMatch[4]) : 0;
+  const sectionMatch = t.match(/Produtos\s*\/\s*Serviços[\s\S]*?R\$\s*Unit\.?\s*Qtd\.?\s*R\$\s*Desc\.?\s*Total\s*([\s\S]*?)(?=\s*Quantidade\s+total|\s*Pagamentos|\s*Totais)/i);
+  const section = sectionMatch ? sectionMatch[1] : "";
+  const products = [];
+  const itemRegex = /(?:^|\s)(\d+)\s+(.+?)\s+\((\d+)\)\s+([\d.]+,\d{2})\s+(\d+)\s*UN\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})(?=\s+\d+\s+|$)/g;
+  let m;
+  while ((m = itemRegex.exec(section)) !== null) {
+    products.push({numero:m[1], descricao:cleanText(m[2]), codigo:m[3], unitario:parseMoney(m[4]), quantidade:Number(m[5])||1, desconto:parseMoney(m[6]), total:parseMoney(m[7])});
+  }
 
-  const forma = extractValue(t, "Forma de pagamento", ["Totais"])
-    .replace(/^Valor\s*/i,"").replace(/^\d+\s*/,"").replace(/\s+\d{1,3},\d{2}\s*$/,"").trim();
-
+  const formaMatch = t.match(/Forma de pagamento\s+Valor\s+(?:\d+\s+)?(.+?)\s+([\d.]+,\d{2})(?=\s+Totais)/i);
+  const forma = formaMatch ? cleanText(formaMatch[1]) : "";
   const bruto = parseMoney((t.match(/Total Bruto\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
-  const desconto = parseMoney((t.match(/Descontos\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
+  const descontoTotal = parseMoney((t.match(/Descontos\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
   const liquido = parseMoney((t.match(/Total Líquido\s+R?\$?\s*([\d.,]+)/i)||[,""])[1]);
 
   const lines = [
-    "================================",
-    "            ANA STORE",
-    "================================",
-    "Rua Pedro Garcia Cano, 135",
-    "Nova Tanabi - Tanabi/SP",
-    "Telefone: (17) 99109-2383",
-    "anaclaudiahilario10@gmail.com",
-    "--------------------------------",
-    "       COMPROVANTE NAO FISCAL",
-    "--------------------------------",
-    "VENDA: " + venda,
-    "DATA: " + data,
-    "VENDEDOR: " + (vendedor || "Tiago Alves"),
-    "",
-    "CLIENTE: " + (cliente || "Cliente final"),
-    "--------------------------------",
-    "PRODUTO",
-    "--------------------------------",
-    desc || "PRODUTO",
+    "================================","            ANA STORE","================================",
+    "Rua Pedro Garcia Cano, 135","Nova Tanabi - Tanabi/SP","Telefone: (17) 99109-2383","anaclaudiahilario10@gmail.com",
+    "--------------------------------","       COMPROVANTE NAO FISCAL","--------------------------------",
+    tipoDocumento + ": " + venda,"DATA: " + data,"VENDEDOR: " + vendedor,"","CLIENTE: " + cliente,
+    "--------------------------------","PRODUTOS","--------------------------------"
   ];
-  if (codigo) lines.push("CODIGO: " + codigo);
-  lines.push(
-    qtd + " UN x R$ " + moneyBR(unit),
-    "DESCONTO: R$ " + moneyBR(descItem),
-    "TOTAL ITEM: R$ " + moneyBR(totalItem || liquido),
-    "--------------------------------",
-    "FORMA DE PAGAMENTO",
-    forma || "Cartao de credito a vista",
-    "R$ " + moneyBR(liquido || totalItem),
-    "--------------------------------",
-    "TOTAL BRUTO: R$ " + moneyBR(bruto || unit),
-    "DESCONTO: R$ " + moneyBR(desconto || descItem),
-    "TOTAL A PAGAR: R$ " + moneyBR(liquido || totalItem),
-    "================================",
-    "",
-    "      OBRIGADO PELA COMPRA!",
-    "",
-    "Este documento nao possui valor fiscal.",
-    "Trocas em ate 30 dias mediante",
-    "apresentacao deste comprovante.",
-    "",
-    "Instagram: @anastore.tanabi",
-    "================================"
-  );
+
+  if (products.length) {
+    products.forEach((item, index) => {
+      lines.push((index+1)+". "+item.descricao,"CODIGO: "+item.codigo,item.quantidade+" UN x R$ "+moneyBR(item.unitario),"DESCONTO: R$ "+moneyBR(item.desconto),"TOTAL ITEM: R$ "+moneyBR(item.total));
+      if (index < products.length-1) lines.push("--------------------------------");
+    });
+  } else {
+    lines.push("Nenhum produto identificado automaticamente.","Confira e edite esta previa antes de gerar.");
+  }
+
+  lines.push("--------------------------------","QUANTIDADE TOTAL: "+products.reduce((s,p)=>s+p.quantidade,0),"--------------------------------","FORMA DE PAGAMENTO",forma||"Nao informada no documento",liquido?"R$ "+moneyBR(liquido):"","--------------------------------","TOTAL BRUTO: R$ "+moneyBR(bruto||products.reduce((s,p)=>s+p.unitario*p.quantidade,0)),"DESCONTO: R$ "+moneyBR(descontoTotal||products.reduce((s,p)=>s+p.desconto,0)),"TOTAL A PAGAR: R$ "+moneyBR(liquido||products.reduce((s,p)=>s+p.total,0)),"================================","","      OBRIGADO PELA COMPRA!","","Este documento nao possui valor fiscal.","Trocas em ate 30 dias mediante","apresentacao deste comprovante.","","Instagram: @anastore.tanabi","================================");
   return lines.join("\n");
 }
 
